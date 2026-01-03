@@ -1,15 +1,19 @@
 import cv2
+from collections import defaultdict
 from ultralytics import YOLO
 
-logo=cv2.imread("logo.jpg")
-cv2.imshow("Birdwatcher",logo)
+cv2.imshow("Birdwatcher", cv2.imread("logo.jpg"))
 
-# laddar modellen
-model = YOLO("yolov8m.pt")
+model = YOLO("yolov8n.pt")
+
+cap = cv2.VideoCapture(0)
+
+doTracking = True
+
+# Store past positions per object ID
+track_history = defaultdict(list)
 
 
-# COCO är datasettet som modellen tränas på. 
-# Varje siffra representerar en sak som går att hitta.
 ALL_CLASSES = {
     0, #person
     1, #bicycle
@@ -93,49 +97,64 @@ ALL_CLASSES = {
     79, #toothbrush
 }
 
-SPECIFIED_CLASSES = {  #Här definieras vilka objekt vi letar efter
-    0, #person
-    1, #bicycle
-    2, #car
-    14, #bird
-    15, #cat
-    16, #dog
-    17, #horse
-}
+SPECIFIED_CLASSES=[
+    0
+]
 
-#Skapar kamerobjektet
-capture = cv2.VideoCapture(0)  # 0 = default webcam
-
-cv2.destroyAllWindows
+cv2.destroyAllWindows()
 
 while True:
-    ret, frame = capture.read()
-    if not ret:  #Dödar programmet om det inte existerar en kamera
+    ret, frame = cap.read()
+    if not ret:
         break
 
-    results = model(frame, stream=True) #här kör modellen
+    results = model.track(
+        frame,
+        persist=True,
+        tracker="bytetrack.yaml",
+        conf=0.4
+    )
 
-    for r in results: 
-        for box in r.boxes: 
-            class_id = int(box.cls[0]) 
-            if class_id in SPECIFIED_CLASSES: #Kollar om det modellen hittar är det vi vill se
-                x1, y1, x2, y2 = map(int, box.xyxy[0]) #objektets position i kameravyn
-                label = model.names[class_id] #vad är det som modellen hittat         
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2) #Skapar rutan
-                cv2.putText(        #Skapar texten
-                frame,      
-                label,
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2
-                )
+    if results[0].boxes.id is not None:
+        boxes = results[0].boxes.xyxy.cpu()  #cpu to only run tensors on cpu
+        track_ids = results[0].boxes.id.cpu().tolist()  #tolist turns tensors into python lists
+        class_ids = results[0].boxes.cls.cpu().tolist() 
 
-    cv2.imshow("Birdwatcher", frame) #Visar bilden i ett fönster
-    
-    if cv2.waitKey(1) & 0xFF == ord("q"): #Stänger av programmet på knapptryck
+        for box, track_id, cls_id in zip(boxes, track_ids, class_ids):
+            if cls_id in SPECIFIED_CLASSES: #Checks if we are intresteted in the track
+                x1, y1, x2, y2 = map(int, box)
+                cx = int((x1 + x2) / 2)
+                cy = int((y1 + y2) / 2)
+
+                # Save center point
+                track_history[track_id].append((cx, cy))
+
+                # Limit history length
+                if len(track_history[track_id]) > 50:
+                    track_history[track_id].pop(0)
+
+                # Draw bounding box
+                label = f"{model.names[int(cls_id)]} #{track_id}"
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, 
+                            label, 
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.6, 
+                            (0, 255, 0), 
+                            2)
+
+                # Draw path
+                points = track_history[track_id]
+                if doTracking:
+                    for i in range(1, len(points)):
+                        cv2.line(frame, points[i - 1], points[i], (255, 0, 0), 2)
+
+    cv2.imshow("Birdwatcher", frame)
+    if cv2.waitKey(1) & 0xFF == ord("t"):
+        doTracking = not doTracking
+    if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-capture.release()
+cap.release()
 cv2.destroyAllWindows()
